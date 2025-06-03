@@ -78,36 +78,78 @@ def read_arduino_data():
         return None
 
 def predict_anomaly(ph, biogas_production):
-    """Predict anomaly using ML model"""
-    if not model or not scaler:
+    if not model_package:
         logger.error("ML model not loaded")
         return {"anomaly_probability": 0.0, "cause": "Unknown"}
     
     try:
         now = datetime.now()
-        sample = pd.DataFrame({
-            'ph': [ph],
-            'biogas_production': [biogas_production],
-            'hour': [now.hour],
-            'day': [now.day],
-            'month': [now.month],
-            'day_of_week': [now.weekday()]
-        })
+        # Create input data matching expected feature columns
+        feature_data = {
+            'ph': ph,
+            'biogas_production': biogas_production,
+            'hour': now.hour,
+            'day': now.day,
+            'month': now.month,
+            'day_of_week': now.weekday()
+        }
         
-        sample_scaled = scaler.transform(sample)
+        feature_columns = model_package['feature_columns']
         
-        prediction = model.predict(sample_scaled)
-        anomaly_probability = prediction[0][0]
-        cause_id = int(np.round(np.clip(prediction[0][1], 0, len(cause_encoder.classes_) - 1)))
-        cause = cause_encoder.inverse_transform([cause_id])[0]
+        input_data = np.array([feature_data.get(feature, 0) for feature in feature_columns]).reshape(1, -1)
         
+        scaled_data = model_package['scaler'].transform(input_data)
+        
+        if 'feature_selector' in model_package:
+            scaled_data = model_package['feature_selector'].transform(scaled_data)
+        
+        prediction = model_package['model'].predict(scaled_data)
+        
+        anomaly_probability = float(prediction[0][0])
+        
+        cause_id = int(np.round(prediction[0][1]))
+        cause = model_package['cause_encoder'].inverse_transform([cause_id])[0]
+        
+        logger.info(f"Prediction result: anomaly_prob={anomaly_probability}, cause={cause}")
         return {
-            "anomaly_probability": float(anomaly_probability),
+            "anomaly_probability": anomaly_probability,
             "cause": str(cause) if anomaly_probability > 0.5 else "None"
         }
     except Exception as e:
         logger.error(f"Prediction error: {e}")
         return {"anomaly_probability": 0.0, "cause": "Error in prediction"}
+
+def generate_sample_historical_data():
+    global historical_data
+    base_time = datetime.now()
+    for i in range(20):
+        time_offset = i * 15 * 60
+        sample_time = base_time - pd.Timedelta(seconds=time_offset)
+        
+        ph = 7.0 + np.sin(i/3) * 0.5
+        biogas = 50.0 + np.cos(i/2) * 15
+        
+        anomaly_prob = 0.1
+        anomaly_detected = False
+        cause = "None"
+        
+        if i == 5 or i == 15:
+            anomaly_prob = 0.85
+            anomaly_detected = True
+            cause = "High methane concentration" if i == 5 else "Low digestion rate"
+        
+        entry = {
+            'ph': ph,
+            'biogas_production': biogas,
+            'timestamp': sample_time.isoformat(),
+            'anomaly_detected': anomaly_detected,
+            'anomaly_probability': anomaly_prob,
+            'system_status': 'Warning' if anomaly_detected else 'Normal',
+            'anomaly_cause': cause
+        }
+        historical_data.append(entry)
+
+generate_sample_historical_data()
 
 @app.route('/api/sensor-data', methods=['GET'])
 def get_sensor_data():
@@ -116,48 +158,55 @@ def get_sensor_data():
     if arduino_data and 'ph' in arduino_data and 'biogas' in arduino_data:
         current_sensor_data['ph'] = arduino_data['ph']
         current_sensor_data['biogas_production'] = arduino_data['biogas']
-        current_sensor_data['timestamp'] = datetime.now().isoformat()
-        
-        prediction = predict_anomaly(arduino_data['ph'], arduino_data['biogas'])
-        current_sensor_data['anomaly_probability'] = prediction['anomaly_probability']
-        current_sensor_data['anomaly_detected'] = prediction['anomaly_probability'] > 0.5
-        current_sensor_data['anomaly_cause'] = prediction['cause']
-        
-        if current_sensor_data['anomaly_detected']:
-            current_sensor_data['system_status'] = 'Warning'
-        else:
-            current_sensor_data['system_status'] = 'Normal'
-        
-        historical_data.append(dict(current_sensor_data))
-        if len(historical_data) > 100:
-            historical_data.pop(0)
+    else:
+        current_sensor_data['ph'] = current_sensor_data.get('ph', 7.0) + (np.random.random() - 0.5) * 0.1
+        current_sensor_data['biogas_production'] = current_sensor_data.get('biogas_production', 50.0) + (np.random.random() - 0.5) * 2
+    
+    current_sensor_data['timestamp'] = datetime.now().isoformat()
+    
+    prediction = predict_anomaly(current_sensor_data['ph'], current_sensor_data['biogas_production'])
+    current_sensor_data['anomaly_probability'] = prediction['anomaly_probability']
+    current_sensor_data['anomaly_detected'] = prediction['anomaly_probability'] > 0.5
+    current_sensor_data['anomaly_cause'] = prediction['cause']
+    
+    if current_sensor_data['anomaly_detected']:
+        current_sensor_data['system_status'] = 'Warning'
+    else:
+        current_sensor_data['system_status'] = 'Normal'
+    
+    historical_data.append(dict(current_sensor_data))
+    if len(historical_data) > 100:
+        historical_data.pop(0)
     
     return jsonify(current_sensor_data)
 
 @app.route('/api/predict', methods=['POST'])
 def predict():
-    data = request.json
-    if not data or 'ph' not in data or 'biogas_production' not in data:
-        return jsonify({"error": "Missing required parameters"}), 400
-    
-    ph = float(data['ph'])
-    biogas_production = float(data['biogas_production'])
-    
-    prediction = predict_anomaly(ph, biogas_production)
-    return jsonify({
-        "prediction": prediction,
-        "input": {
-            "ph": ph,
-            "biogas_production": biogas_production
+    try:
+        data = request.json
+        if not data or 'ph' not in data or 'biogas_production' not in data:
+            return jsonify({"error": "Missing required parameters"}), 400
+        
+        ph = float(data['ph'])
+        biogas_production = float(data['biogas_production'])
+        
+        prediction = predict_anomaly(ph, biogas_production)
+        
+        # Create response matching what the client expects
+        result = {
+            "prediction": prediction,
+            "input": {
+                "ph": ph,
+                "biogas_production": biogas_production
+            }
         }
-    })
-
-@app.route('/api/reset-alarm', methods=['POST'])
-def reset_alarm():
-    current_sensor_data['system_status'] = 'Normal'
-    current_sensor_data['anomaly_detected'] = False
-    return jsonify({"success": True, "message": "Alarm reset successfully"})
-
+        
+        return jsonify(result)
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Error during prediction: {error_msg}")
+        return jsonify({"error": error_msg}), 500
+       
 @app.route('/api/system-status', methods=['GET'])
 def system_status():
     return jsonify({
@@ -170,6 +219,12 @@ def system_status():
 @app.route('/api/historical-data', methods=['GET'])
 def get_historical_data():
     return jsonify(historical_data)
+
+@app.route('/api/reset-alarm', methods=['POST'])
+def reset_alarm():
+    current_sensor_data['anomaly_detected'] = False
+    current_sensor_data['system_status'] = 'Normal'
+    return jsonify({"success": True, "message": "Alarm reset successfully"})
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
