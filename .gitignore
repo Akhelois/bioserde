@@ -25,3 +25,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Hidden
+api_key.txt
+biogas_monitoring.log
+components.json
+config.json
+endpoint_url.txt
+enviroment.yml
+ml_result.txt
