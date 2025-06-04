@@ -27,10 +27,10 @@ yarn-error.log*
 next-env.d.ts
 
 # Hidden
-api_key.txt
-biogas_monitoring.log
-components.json
-config.json
-endpoint_url.txt
-enviroment.yml
-ml_result.txt
+/api_key.txt
+/biogas_monitoring.log
+/components.json
+/config.json
+/endpoint_url.txt
+/enviroment.yml
+/ml_result.txt
