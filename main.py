@@ -66,19 +66,111 @@ from openai import AzureOpenAI
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from azure.iot.device import IoTHubDeviceClient, Message
+import serial.tools.list_ports
 
 load_dotenv()
+iot_client = None
 
 @st.cache_resource
-def init_arduino():
+def init_arduino_and_iot():
+    global iot_client
+    
+    arduino = None
     try:
-        arduino = serial.Serial('COM3', 9600, timeout=2)
-        time.sleep(2)
-        return arduino
+        available_ports = serial.tools.list_ports.comports()
+        
+        if not available_ports:
+            print("❌ Tidak ada port serial yang tersedia")
+        else:
+            print("🔍 Mencari Arduino di port yang tersedia:")
+            for port in available_ports:
+                print(f"  - {port.device}: {port.description}")
+            
+            possible_ports = []
+            for port in available_ports:
+                if any(keyword in port.description.lower() for keyword in 
+                       ['arduino', 'ch340', 'cp210', 'ftdi', 'usb-serial', 'com']):
+                    possible_ports.append(port.device)
+            
+            if not possible_ports:
+                possible_ports = [port.device for port in available_ports]
+            
+            for port_name in possible_ports:
+                try:
+                    print(f"🔌 Mencoba connect ke {port_name}...")
+                    arduino = serial.Serial(port_name, 9600, timeout=2)
+                    time.sleep(2)
+                    
+                    arduino.flushInput()
+                    test_read = arduino.readline().decode('utf-8').strip()
+                    
+                    print(f"✅ Berhasil connect ke Arduino di {port_name}")
+                    if test_read:
+                        print(f"📡 Test data: {test_read}")
+                    break
+                    
+                except Exception as e:
+                    print(f"❌ Failed pada {port_name}: {str(e)}")
+                    continue
+    
     except Exception as e:
-        return None
+        print(f"❌ Error dalam pencarian Arduino: {str(e)}")
+    
+    try:
+        CONNECTION_STRING = "HostName=318Hub.azure-devices.net;DeviceId=bioserde;SharedAccessKey=ml0XIrouzxoP/zmDGex1lHNjcCj76+cD/aRwKc+r9no="
+        iot_client = IoTHubDeviceClient.create_from_connection_string(CONNECTION_STRING)
+        print("🌐 Connecting to Azure IoT Hub...")
+        iot_client.connect()
+        print("✅ Connected to Azure IoT Hub")
+    except Exception as azure_error:
+        print(f"⚠️ Azure IoT Hub connection failed: {azure_error}")
+        iot_client = None
+    
+    return arduino, iot_client
 
-arduino_connection = init_arduino()
+def send_to_iot_hub(sensor_data, status, issues):
+    global iot_client
+    
+    if iot_client is None:
+        try:
+            CONNECTION_STRING = "HostName=318Hub.azure-devices.net;DeviceId=bioserde;SharedAccessKey=ml0XIrouzxoP/zmDGex1lHNjcCj76+cD/aRwKc+r9no="
+            iot_client = IoTHubDeviceClient.create_from_connection_string(CONNECTION_STRING)
+            iot_client.connect()
+            print("🔄 IoT Hub reconnected")
+        except Exception as e:
+            print(f"⚠️ IoT Hub reconnection failed: {e}")
+            return False
+    
+    try:
+        message_data = {
+            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
+            "deviceId": "bioserde",
+            "temperature": sensor_data["temperature"],
+            "ph": sensor_data["ph"],
+            "methane": sensor_data["methane"],
+            "status": status,
+            "issues": issues,
+            "source": sensor_data["source"]
+        }
+        
+        message_json = json.dumps(message_data)
+        message = Message(message_json)
+        
+        message.custom_properties["messageType"] = "telemetry"
+        message.custom_properties["deviceId"] = "bioserde"
+        message.custom_properties["status"] = status
+        
+        iot_client.send_message(message)
+        print(f"📤 Data berhasil dikirim ke IoT Hub: {message_json}")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Gagal kirim ke IoT Hub: {str(e)}")
+        iot_client = None
+        return False
+    
+arduino_connection, iot_client = init_arduino_and_iot()
 
 def read_arduino_data():
     if arduino_connection is None:
@@ -91,19 +183,24 @@ def read_arduino_data():
     
     try:
         arduino_connection.flushInput()
-        
         line = arduino_connection.readline().decode('utf-8').strip()
         
-        if line:
-            if ',' in line:
-                values = line.split(',')
-                if len(values) >= 3:
-                    return {
-                        "temperature": float(values[0]),
-                        "ph": float(values[1]),
-                        "methane": float(values[2]),
-                        "source": "arduino"
-                    }
+        if line and ',' in line:
+            values = line.split(',')
+            if len(values) >= 3:
+                temp = float(values[0])
+                raw_ph = float(values[1])
+                methane = float(values[2])
+                
+                ph = 7.0 + (raw_ph - 2.5) * 2
+                ph = max(0, min(14, ph))
+                
+                return {
+                    "temperature": temp,
+                    "ph": ph,
+                    "methane": methane,
+                    "source": "arduino"
+                }
         
         return {
             "temperature": 35.0,
@@ -113,6 +210,7 @@ def read_arduino_data():
         }
         
     except Exception as e:
+        print(f"❌ Error reading Arduino: {e}")
         return {
             "temperature": random.uniform(30, 45),
             "ph": random.uniform(6.0, 8.5),
@@ -256,8 +354,11 @@ with st.container():
     
     with col1:
         if arduino_connection:
-            st.success("🔗 **Terhubung ke Arduino COM3** - Data real-time dari sensor")
-            st.info("📡 **Sensor Aktif**: LM35 (Temperature) + MQ-2 (Gas) + pH Simulasi")
+            st.success("🔗 **Terhubung ke Arduino COM5** - Data real-time dari sensor")
+            if iot_client:
+                st.success("☁️ **Terhubung ke Azure IoT Hub** - Data tersinkron ke cloud")
+            else:
+                st.warning("⚠️ **Arduino OK, IoT Hub gagal** - Data hanya lokal")
         else:
             st.warning("⚠️ **Tidak terhubung ke Arduino** - Menggunakan data simulasi")
     
@@ -279,6 +380,8 @@ elif data_source == "simulation":
     st.info("🎮 **Mode Simulasi**: Arduino tidak terhubung")
 
 status, issues = analyze_sensor_data(suhu, ph, gas_level)
+
+iot_success = send_to_iot_hub(sensor_data, status, issues)
 
 current_reading = {
     "timestamp": time.time(),
