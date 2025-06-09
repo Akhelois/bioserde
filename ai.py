@@ -526,7 +526,6 @@ if auto_refresh:
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: gray;'>
-    <p>🏭 <strong>Dashboard Biogas Bioserde</strong> - Teknologi AI untuk UMKM Indonesia 🇮🇩</p>
-    <p><em>Dikembangkan dengan ❤️ untuk memudahkan petani dan pengusaha biogas</em></p>
+    <p>🏭 <strong>Dashboard Biogas Bioserde</strong></p>
 </div>
 """, unsafe_allow_html=True)
