@@ -27,6 +27,12 @@ yarn-error.log*
 next-env.d.ts
 
 # Hidden
+app.py
+arduino_data.json
+azure_bridge.py
+azure_ml_iot.py
+biogas_anomaly_model.pkl
+model.ipynb
 api_key.txt
 biogas_monitoring.log
 components.json

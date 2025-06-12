@@ -183,24 +183,46 @@ def read_arduino_data():
     
     try:
         arduino_connection.flushInput()
-        line = arduino_connection.readline().decode('utf-8').strip()
+        time.sleep(0.1)
         
-        if line and ',' in line:
-            values = line.split(',')
-            if len(values) >= 3:
-                temp = float(values[0])
-                raw_ph = float(values[1])
-                methane = float(values[2])
-                
-                ph = 7.0 + (raw_ph - 2.5) * 2
-                ph = max(0, min(14, ph))
-                
-                return {
-                    "temperature": temp,
-                    "ph": ph,
-                    "methane": methane,
-                    "source": "arduino"
-                }
+        for attempt in range(3):
+            line = arduino_connection.readline().decode('utf-8').strip()
+            print(f"🔍 Attempt {attempt + 1}: Raw data dari Arduino: '{line}' (length: {len(line)})")
+            
+            if line and ',' in line:
+                try:
+                    values = line.split(',')
+                    print(f"📊 Parsed values: {values} (count: {len(values)})")
+                    
+                    if len(values) >= 3:
+                        temp = float(values[0])
+                        raw_ph = float(values[1])
+                        methane = float(values[2])
+                        
+                        if 0 <= temp <= 100 and 0 <= raw_ph <= 5 and 0 <= methane <= 1024:
+                            ph = 7.0 + (raw_ph - 2.5) * 2
+                            ph = max(0, min(14, ph))
+                            
+                            print(f"✅ Valid data parsed: Temp={temp}°C, Raw_pH={raw_ph}V, pH={ph:.1f}, Methane={methane}")
+                            
+                            return {
+                                "temperature": temp,
+                                "ph": ph,
+                                "methane": methane,
+                                "source": "arduino"
+                            }
+                        else:
+                            print(f"⚠️ Data out of range: temp={temp}, raw_ph={raw_ph}, methane={methane}")
+                    else:
+                        print(f"⚠️ Not enough values: expected 3, got {len(values)}")
+                        
+                except ValueError as e:
+                    print(f"❌ Error parsing values: {e}")
+                    continue
+            else:
+                print(f"⚠️ No comma found or empty line: '{line}'")
+            
+            time.sleep(0.1)
         
         return {
             "temperature": 35.0,
@@ -618,13 +640,24 @@ with st.sidebar:
     🔴 Ada suara aneh dari sistem
     """)
 
+# if auto_refresh:
+#     placeholder = st.empty()
+#     for i in range(5, 0, -1):
+#         placeholder.info(f"🔄 Auto refresh dalam {i} detik...")
+#         time.sleep(1)
+#     placeholder.empty()
+#     st.rerun()
 if auto_refresh:
-    placeholder = st.empty()
-    for i in range(5, 0, -1):
-        placeholder.info(f"🔄 Auto refresh dalam {i} detik...")
-        time.sleep(1)
-    placeholder.empty()
-    st.rerun()
+    if "refresh_timer" not in st.session_state:
+        st.session_state.refresh_timer = time.time()
+    
+    elapsed = time.time() - st.session_state.refresh_timer
+    if elapsed >= 5:
+        st.session_state.refresh_timer = time.time()
+        st.rerun()
+    
+    remaining = max(0, 5 - elapsed)
+    st.info(f"🔄 Auto refresh dalam {remaining:.1f} detik")
 
 st.divider()
 st.markdown("""
